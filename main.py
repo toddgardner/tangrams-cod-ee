@@ -1,5 +1,6 @@
 import csv
 from collections import OrderedDict
+from math import ceil
 from typing import Dict, Callable, Tuple, Sequence, Optional
 from glob import glob
 from os.path import basename, splitext
@@ -112,10 +113,6 @@ def validate_tangrams(wz_tangrams: WzTangrams, codm_tangrams: CodmTangrams, mapp
                 raise ValidationException(f"Tangram not in mapping.csv: {tangram_set}/{tangram_name}")
 
     for wz_tangram_name, codm_tangram_name in mapping.items():
-        # We're currently missing some CODM tangrams:
-        if not codm_tangram_name:
-            continue
-
         wz_tangram = wz_tangrams.get(wz_tangram_name, None)
         if wz_tangram is None:
             raise ValidationException(f"Missing wz tangram {wz_tangram_name}")
@@ -210,8 +207,8 @@ def print_reference_image(wz_tangrams: WzTangrams, codm_tangrams: CodmTangrams, 
             row = i % 6
             col = int(i/6)
 
-            wz_tangram = wz_tangrams.get(wz_tangram_name, None)
-            codm_tangram = codm_tangrams.get(codm_tangram_name, None)
+            wz_tangram = wz_tangrams[wz_tangram_name]
+            codm_tangram = codm_tangrams[codm_tangram_name]
 
             tangram_pair_vertical_start = BORDER_WIDTH + row*tangram_pair_vertical_size
             tangram_pair_horizontal_start = BORDER_WIDTH + col*tangram_pair_horizontal_size
@@ -231,13 +228,12 @@ def print_reference_image(wz_tangrams: WzTangrams, codm_tangrams: CodmTangrams, 
                 tangram_pair_vertical_start+BETWEEN_TANGRAM_PAIR_BORDER,
                 wz_tangram
             )
-            if codm_tangram:
-                draw_tangram(
-                    draw,
-                    tangram_pair_horizontal_start + BETWEEN_TANGRAM_PAIR_BORDER + 3*TANGRAM_SQUARE_SIZE,
-                    tangram_pair_vertical_start + BETWEEN_TANGRAM_PAIR_BORDER,
-                    codm_tangram
-                )
+            draw_tangram(
+                draw,
+                tangram_pair_horizontal_start + BETWEEN_TANGRAM_PAIR_BORDER + 3*TANGRAM_SQUARE_SIZE,
+                tangram_pair_vertical_start + BETWEEN_TANGRAM_PAIR_BORDER,
+                codm_tangram
+            )
 
         im.save("output/reference.png", "PNG")
 
@@ -249,7 +245,7 @@ def print_translated_tangrams(draw: ImageDraw,
                               codm_tangrams: CodmTangrams,
                               mapping: MappingDict,
                               tangram_order: Sequence[Sequence[int]],
-                              color_translation: Callable[[str, Optional[str]], Tuple[int, int, int]]):
+                              color_translation: Callable[[str, str], Tuple[int, int, int]]):
     """Prints tangrams according to a layout in tangram_order, with the translation function."""
     cols = len(tangram_order[0])
 
@@ -337,7 +333,7 @@ def print_translated_reference(wz_tangrams: WzTangrams, codm_tangrams: CodmTangr
         }
 
         def translated_ref_colors(wz, codm):
-            if not codm or is_arrow(wz):
+            if is_arrow(wz):
                 return None
             if wz == codm:
                 return COLORS[wz]
@@ -420,6 +416,157 @@ def print_test_grid(filename: str, stripped: bool, rows: int, wz_tangrams: WzTan
         im.save(filename, "PNG")
 
 
+def count_slash_configurations(wz_tangrams: WzTangrams, codm_tangrams: CodmTangrams, mapping: MappingDict):
+    potential_encodings = []
+    for i in range(128):
+        binary_str = f"{i:07b}"
+        colors_codes = [
+            "AA",
+            "YY",
+            "RR",
+            "BB",
+            "BR",
+            "BY",
+            "RY"
+        ]
+        color_translation = {}
+        for color_code, setting in zip(colors_codes, binary_str):
+            color_translation[color_code] = int(setting)
+
+        def translate_tangram(wz_tangram: str, codm_tangram: str):
+            merged_tangram = []
+            for i, wz_letter in enumerate(wz_tangram):
+                if is_arrow(wz_letter):
+                    merged_tangram.append("AA")
+                else:
+                    merged_tangram.append("".join(sorted((wz_letter, codm_tangram[i]))))
+
+            return [color_translation[combo] for combo in merged_tangram]
+
+        for wz_tangram_name, codm_tangram_name in mapping.items():
+            wz_tangram = wz_tangrams[wz_tangram_name]
+            codm_tangram = codm_tangrams[codm_tangram_name]
+            translated_tangram = translate_tangram(wz_tangram, codm_tangram)
+            if translated_tangram != [0, 1, 0, 1, 0, 0]:
+                continue
+
+            for wz_tangram_name_2, codm_tangram_name_2 in mapping.items():
+                if wz_tangram_name_2 == wz_tangram_name:
+                    continue
+                wz_tangram_2 = wz_tangrams[wz_tangram_name_2]
+                codm_tangram_2 = codm_tangrams[codm_tangram_name_2]
+                translated_tangram_2 = translate_tangram(wz_tangram_2, codm_tangram_2)
+
+                if translated_tangram_2 != [0, 0, 0, 0, 0, 1]:
+                    continue
+
+                for wz_tangram_name_3, codm_tangram_name_3 in mapping.items():
+                    if wz_tangram_name_3 in (wz_tangram_name, wz_tangram_name_2):
+                        continue
+
+                    wz_tangram_3 = wz_tangrams[wz_tangram_name_3]
+                    codm_tangram_3 = codm_tangrams[codm_tangram_name_3]
+                    translated_tangram_3 = translate_tangram(wz_tangram_3, codm_tangram_3)
+
+                    if translated_tangram_3[0] != 1 or translated_tangram_3[1] != 0:
+                        continue
+                    if translated_tangram_3[3] != 0 or translated_tangram_3[4] != 0:
+                        continue
+
+                    for wz_tangram_name_4, codm_tangram_name_4 in mapping.items():
+                        if wz_tangram_name_4 in (wz_tangram_name, wz_tangram_name_2, wz_tangram_name_3):
+                            continue
+
+                        wz_tangram_4 = wz_tangrams[wz_tangram_name_4]
+                        codm_tangram_4 = codm_tangrams[codm_tangram_name_4]
+                        translated_tangram_4 = translate_tangram(wz_tangram_4, codm_tangram_4)
+
+                        if translated_tangram_4[0] != 0 or translated_tangram_4[1] != 0:
+                            continue
+                        if translated_tangram_4[3] != 0 or translated_tangram_4[4] != 0:
+                            continue
+
+                        if all(letter == 0 for letter in (translated_tangram_3[2], translated_tangram_3[5], translated_tangram_4[2], translated_tangram_4[5])):
+                            continue
+
+                        if len(potential_encodings) % 1000 == 0:
+                            print(translated_tangram, translated_tangram_2, translated_tangram_4)
+
+                        potential_encodings.append((binary_str, wz_tangram_name, wz_tangram_name_2, wz_tangram_name_3, wz_tangram_name_4))
+
+                    # if count % 1000 == 0:
+                    #     print(translated_tangram, translated_tangram_2, translated_tangram_3)
+                    #
+                    # potential_encodings.append((binary_str, wz_tangram_name, wz_tangram_name_2, wz_tangram_name_3))
+                    # count += 1
+
+    print(len(potential_encodings))
+
+    border_size = 5
+    square_size = 10
+
+    x_spacing = 10
+
+    x_grid_size, y_grid_size = 18*3*square_size, 2*2*square_size
+    y_grid_size_with_border = y_grid_size+(2*border_size)
+    x_grid_size_with_border = x_grid_size+(2*border_size)
+    x_image_size = 16*x_grid_size_with_border+15*x_spacing
+    y_image_size = ceil(len(potential_encodings)/16)*y_grid_size_with_border
+    with Image.new("RGB", (x_image_size, y_image_size)) as im:
+        draw = ImageDraw.Draw(im)
+
+        draw.rectangle(
+            [0, 0, x_image_size, y_image_size],
+            fill=(255, 255, 255), outline=BORDER_COLOR, width=border_size
+        )
+
+        for index, (binary_str, wz_tangram_name_1, wz_tangram_name_2, wz_tangram_name_3, wz_tangram_name_4) in enumerate(potential_encodings):
+            row = int(index/16)
+            col = index % 16
+
+            left_overs = [i for i in range(1, 37) if i not in (wz_tangram_name_1, wz_tangram_name_2, wz_tangram_name_3, wz_tangram_name_4)]
+            tangram_order = [[wz_tangram_name_2, wz_tangram_name_3], [wz_tangram_name_1, wz_tangram_name_4]]
+            for i in range(16):
+                tangram_order[0].append(left_overs.pop())
+            for i in range(16):
+                tangram_order[1].append(left_overs.pop())
+
+            colors_codes = [
+                "AA",
+                "YY",
+                "RR",
+                "BB",
+                "BR",
+                "BY",
+                "RY"
+            ]
+            color_translation = {}
+            for color_code, setting in zip(colors_codes, binary_str):
+                if setting == "1":
+                    color_translation[color_code] = (0, 0, 0)
+                else:
+                    color_translation[color_code] = (255, 255, 255)
+
+            def translated_colors(wz, codm):
+                if is_arrow(wz):
+                    return color_translation["AA"]
+                return color_translation["".join(sorted((wz, codm)))]
+
+            print_translated_tangrams(
+                draw,
+                (x_grid_size_with_border*col)+(x_spacing*col),
+                y_grid_size_with_border*row,
+                square_size,
+                wz_tangrams,
+                codm_tangrams,
+                mapping,
+                tangram_order,
+                translated_colors
+            )
+
+        im.save("output/grids_with_starting_slashs.png", "PNG")
+
+
 def main():
     wz_tangrams, codm_tangrams = read_tandata()
     mapping = read_mapping_file()
@@ -430,6 +577,9 @@ def main():
     print_test_grid("output/grid_6_by_6_sequential.png", False, 6, wz_tangrams, codm_tangrams, mapping)
     print_test_grid("output/grid_18_by_2_stripped.png", True, 2, wz_tangrams, codm_tangrams, mapping)
     print_test_grid("output/grid_18_by_2_sequential.png", False, 2, wz_tangrams, codm_tangrams, mapping)
+    print_test_grid("output/grid_12_by_3_stripped.png", True, 3, wz_tangrams, codm_tangrams, mapping)
+    print_test_grid("output/grid_12_by_3_sequential.png", False, 3, wz_tangrams, codm_tangrams, mapping)
+    count_slash_configurations(wz_tangrams, codm_tangrams, mapping)
 
 
 if __name__ == '__main__':
